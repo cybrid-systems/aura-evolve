@@ -25,5 +25,10 @@ exec "${DOCKER[@]}" run --rm -i --entrypoint /usr/local/bin/gosu \
   -e AURA_PIPELINE_STRICT=0 \
   -e AURA_SANDBOX=off \
   -e AURA_BIN=/workspace/aura-grok/build/aura \
+  -e "EVOLVE_HORIZON=${EVOLVE_HORIZON:-}" \
+  -e "EVOLVE_BURN_ROUNDS=${EVOLVE_BURN_ROUNDS:-}" \
+  -e "EVOLVE_ROUND_DIR=${EVOLVE_ROUND_DIR:-}" \
+  -e "EVOLVE_PROPOSE_FILE=${EVOLVE_PROPOSE_FILE:-}" \
+  -e "EVOLVE_PROPOSE=${EVOLVE_PROPOSE:-}" \
   "${IMG}" \
   dev /usr/bin/stdbuf -oL -eL /workspace/aura-grok/build/aura "$SRC" "$@"
