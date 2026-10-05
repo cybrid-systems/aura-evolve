@@ -106,7 +106,7 @@ KEEP uses the greater score.
 
 ## Non-goals
 
-- Not a city-scale network, not a PLC, not SUMO.
+- Not a city-scale network, not a PLC, not SUMO. M3 is a two-node corridor only.
 - Not a dashboard that only plots one fixed schedule.
 - Not a fake `fiber_live` and not a pretend `hot-strategy:swap!`.
 - Not a C-authoritative light "for latency".
@@ -130,3 +130,22 @@ rollback / DROP，好的 stamp / KEEP 进主世界。环路仍是 aura-tetris /
 aura-go 那一套（热策略、fiber、MutationBoundary、relower）。M0 还没有
 真的 swap，也没有 fiber。第 24 拍只是 `(set! *stop-w* 3)`，并打印
 `MUTATE`。没有 join 就不印 `fiber_live`。
+
+## M1 and M2
+
+M0's file still does not call `hot-strategy` or `fiber:spawn`.
+
+M1 (`docs/m1.md`) swaps and heals `ev:choose` mid-run, then races agg
+against calm. `fiber_live` only when both joins land. `backend=2` is the
+CLI thread fallback, not a fake scheduler stamp.
+
+M2 (`docs/m2.md`) gates a proposed lambda and KEEPs it only when the trial
+score is strictly greater than the current main. Otherwise DROP and heal.
+HTTP stays in `scripts/propose_minimax.py`.
+
+M3 (`docs/m3.md`) is a two-node corridor, not a city-scale network and not
+a second copy of the M0 intersection. Shared or per-node policies. The
+aggregate score is still throughput − queue − stop. `ETAPE` lines are the
+append-only tape. PK burn (`scripts/burn_pk.sh`) races proposals on that
+grid and writes `out/pk_scoreboard.md`. `fiber_live` only when joins match.
+
