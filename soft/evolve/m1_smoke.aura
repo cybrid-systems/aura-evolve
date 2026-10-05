@@ -1,0 +1,144 @@
+;; Mid-run hot-strategy swap/heal, then an honest dual race.
+;; Prints SWAP, HEAL, MUTATE, KEEP, DROP, and EVOLVE_M1_OK.
+;; fiber_live only if the one race joined both fibers. M0 is a different file.
+(load "/workspace/aura-evolve/soft/evolve/world.aura")
+(load "/workspace/aura-evolve/soft/evolve/strategy.aura")
+(load "/workspace/aura-evolve/soft/evolve/hot.aura")
+
+(define *fail* 0)
+
+(define (expect tag got want)
+  (display tag)
+  (display "=")
+  (display (nstr got))
+  (if (= got want)
+      (display " OK")
+      (begin
+        (display " WANT=")
+        (display (nstr want))
+        (set! *fail* (+ *fail* 1))))
+  (newline)
+  got)
+
+(define (tag? r want)
+  (and (pair? r) (pair? (cdr r)) (equal? (car (cdr r)) want)))
+
+(define (main)
+  (let ((seeded (ev:strategy-seed!)))
+    (if (not (and (pair? seeded) (equal? (car seeded) #t)))
+        (display "EVOLVE_M1_FAIL seed\n")
+        (begin
+          (ev:reset! *seed*)
+          (let loop ((i 0))
+            (if (< i 10)
+                (begin
+                  (ev:tick! ev:choose "ev:choose")
+                  (loop (+ i 1)))))
+          (let ((bad (ev:apply-body!
+                      "(lambda (age own other) (begin (set! *tick* 9) 0))"
+                      "bad")))
+            (if (not (tag? bad "gate"))
+                (begin
+                  (display "GATE_FAIL")
+                  (newline)
+                  (set! *fail* (+ *fail* 1)))))
+          (expect "TICK_PRE" *tick* 10)
+          (if (not (= (ev:choose 1 0 3) 0))
+              (begin
+                (display "SLOT_FAIL pre")
+                (newline)
+                (set! *fail* (+ *fail* 1))))
+          (let ((sw (ev:apply-body! *chase-body* "mid-swap")))
+            (if (not (tag? sw "swap"))
+                (begin
+                  (display "SWAP_FAIL")
+                  (newline)
+                  (set! *fail* (+ *fail* 1)))))
+          (expect "TICK_SWAP" *tick* 10)
+          (if (not (= (ev:choose 1 0 3) 1))
+              (begin
+                (display "SLOT_FAIL swap")
+                (newline)
+                (set! *fail* (+ *fail* 1))))
+          (let loop ((i 0))
+            (if (< i 5)
+                (begin
+                  (ev:tick! ev:choose "ev:choose")
+                  (loop (+ i 1)))))
+          (expect "TICK_CONT" *tick* 15)
+          (let ((ugly (ev:apply-body!
+                       "(lambda (age own other) (cons age own))"
+                       "ugly")))
+            (if (not (tag? ugly "probe"))
+                (begin
+                  (display "HEAL_FAIL")
+                  (newline)
+                  (set! *fail* (+ *fail* 1)))))
+          (expect "TICK_HEAL" *tick* 15)
+          ;; Last good snap is the chase body, not the seed.
+          (if (not (= (ev:choose 5 5 1) 0))
+              (begin
+                (display "SLOT_FAIL heal")
+                (newline)
+                (set! *fail* (+ *fail* 1))))
+          (let ((pair (ev:race-thunks!
+                       (lambda () (ev:run! strat-agg "strat-agg" 0))
+                       (lambda () (ev:run! strat-calm "strat-calm" 0)))))
+            (set! *score-agg* (car pair))
+            (set! *score-calm* (car (cdr pair)))
+            (if (>= *score-agg* *score-calm*)
+                (begin
+                  (set! *keep-mid* 1)
+                  (set! *drop-mid* 2)
+                  (set! *main-mid* 1)
+                  (set! *main-name* "strat-agg")
+                  (set! *keep-reason* "higher-score-stamp")
+                  (set! *drop-reason* "lower-score-rollback")
+                  (set! *main-score* (ev:run! strat-agg "strat-agg" 1)))
+                (begin
+                  (set! *keep-mid* 2)
+                  (set! *drop-mid* 1)
+                  (set! *main-mid* 2)
+                  (set! *main-name* "strat-calm")
+                  (set! *keep-reason* "higher-score-stamp")
+                  (set! *drop-reason* "lower-score-rollback")
+                  (set! *main-score* (ev:run! strat-calm "strat-calm" 1)))))
+          (display "RACE agg=")
+          (display (nstr *score-agg*))
+          (display " calm=")
+          (display (nstr *score-calm*))
+          (newline)
+          (ev:stamp-world!)
+          (display "KEEP mid=")
+          (display (number->string *keep-mid*))
+          (display " reason=")
+          (display *keep-reason*)
+          (newline)
+          (display "DROP mid=")
+          (display (number->string *drop-mid*))
+          (display " reason=")
+          (display *drop-reason*)
+          (newline)
+          (expect "SCORE_AGG" *score-agg* -764)
+          (expect "SCORE_CALM" *score-calm* -1086)
+          (expect "MAIN_SCORE" *main-score* -764)
+          (expect "KEEP_MID" *keep-mid* 1)
+          (expect "DROP_MID" *drop-mid* 2)
+          (if (string=? *world-line* "fiber_live")
+              (if (not (and (> *race-backend* 0)
+                            (> *race-spawned* 0)
+                            (= *race-joined* *race-spawned*)))
+                  (begin
+                    (display "WORLD_FAIL")
+                    (newline)
+                    (set! *fail* (+ *fail* 1))))
+              (if (not (string=? *world-line* "host-sequential"))
+                  (begin
+                    (display "WORLD_FAIL")
+                    (newline)
+                    (set! *fail* (+ *fail* 1)))))
+          (if (= *fail* 0)
+              (display "EVOLVE_M1_OK\n")
+              (display "EVOLVE_M1_FAIL\n"))))))
+
+(main)

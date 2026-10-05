@@ -1,0 +1,107 @@
+;; Fixture propose. No HTTP. Gate, heal, DROP, KEEP.
+;; Horizon stays 60 so the scores match the M0 tape law.
+(load "/workspace/aura-evolve/soft/evolve/world.aura")
+(load "/workspace/aura-evolve/soft/evolve/strategy.aura")
+(load "/workspace/aura-evolve/soft/evolve/propose.aura")
+
+(define *fail* 0)
+
+(define (expect tag got want)
+  (display tag)
+  (display "=")
+  (display (nstr got))
+  (if (= got want)
+      (display " OK")
+      (begin
+        (display " WANT=")
+        (display (nstr want))
+        (set! *fail* (+ *fail* 1))))
+  (newline)
+  got)
+
+(define (tag? r want)
+  (and (pair? r) (pair? (cdr r)) (equal? (car (cdr r)) want)))
+
+(define (main)
+  (let ((seeded (ev:strategy-seed!)))
+    (if (not (and (pair? seeded) (equal? (car seeded) #t)))
+        (display "EVOLVE_M2_PROPOSE_FAIL seed\n")
+        (begin
+          (let ((bad (ev:propose-file!
+                      "/workspace/aura-evolve/soft/evolve/fixtures/bad.lambda")))
+            (if (not (tag? bad "propose_reject"))
+                (begin
+                  (display "REJECT_FAIL")
+                  (newline)
+                  (set! *fail* (+ *fail* 1)))))
+          (if (not (= (ev:choose 1 0 3) 0))
+              (begin
+                (display "SLOT_FAIL reject")
+                (newline)
+                (set! *fail* (+ *fail* 1))))
+          (let ((ugly (ev:propose-file!
+                       "/workspace/aura-evolve/soft/evolve/fixtures/ugly.lambda")))
+            (if (not (tag? ugly "propose_heal"))
+                (begin
+                  (display "HEAL_FAIL")
+                  (newline)
+                  (set! *fail* (+ *fail* 1)))))
+          (if (not (= (ev:choose 5 5 1) 1))
+              (begin
+                (display "SLOT_FAIL heal")
+                (newline)
+                (set! *fail* (+ *fail* 1))))
+          (let ((worse (ev:propose-file!
+                        "/workspace/aura-evolve/soft/evolve/fixtures/worse.lambda")))
+            (if (not (tag? worse "propose_drop"))
+                (begin
+                  (display "DROP_FAIL")
+                  (newline)
+                  (set! *fail* (+ *fail* 1)))))
+          (expect "WORSE_BASE" *base-last* -764)
+          (expect "WORSE_TRIAL" *trial-last* -2289)
+          (if (not (and (= (ev:choose 5 5 1) 1) (= (ev:choose 1 0 3) 0)))
+              (begin
+                (display "SLOT_FAIL drop")
+                (newline)
+                (set! *fail* (+ *fail* 1))))
+          (if (not (string=? *main-body* *agg-body*))
+              (begin
+                (display "MAIN_FAIL drop")
+                (newline)
+                (set! *fail* (+ *fail* 1))))
+          (let ((better (ev:propose-file!
+                         "/workspace/aura-evolve/soft/evolve/fixtures/better.lambda")))
+            (if (not (tag? better "propose_keep"))
+                (begin
+                  (display "KEEP_FAIL")
+                  (newline)
+                  (set! *fail* (+ *fail* 1)))))
+          (expect "BETTER_BASE" *base-last* -764)
+          (expect "BETTER_TRIAL" *trial-last* -650)
+          (expect "MAIN_SCORE" *main-score* -650)
+          (expect "LIVE_SCORE" (ev:score) -650)
+          (if (not (and (= (ev:choose 1 0 3) 1) (= (ev:choose 5 5 1) 0)))
+              (begin
+                (display "SLOT_FAIL keep")
+                (newline)
+                (set! *fail* (+ *fail* 1))))
+          (ev:stamp-world!)
+          (if (string=? *world-line* "fiber_live")
+              (if (not (and (> *race-backend* 0)
+                            (= *race-joined* *race-spawned*)
+                            (= *race-spawned* 4)))
+                  (begin
+                    (display "WORLD_FAIL")
+                    (newline)
+                    (set! *fail* (+ *fail* 1))))
+              (if (not (string=? *world-line* "host-sequential"))
+                  (begin
+                    (display "WORLD_FAIL")
+                    (newline)
+                    (set! *fail* (+ *fail* 1)))))
+          (if (= *fail* 0)
+              (display "EVOLVE_M2_PROPOSE_OK\n")
+              (display "EVOLVE_M2_PROPOSE_FAIL\n"))))))
+
+(main)
