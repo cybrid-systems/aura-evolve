@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Multi-round propose -> gate -> play. Default 3 rounds, horizon 24.
+# Multi-round propose → gate → play. Default 3 rounds, horizon 24.
 # EVOLVE_PROPOSE=1 calls MiniMax when a key file exists; otherwise fixtures.
 # EVOLVE_PROPOSE=0 always uses soft/evolve/fixtures/burn (offline).
 # Run: bash scripts/burn.sh

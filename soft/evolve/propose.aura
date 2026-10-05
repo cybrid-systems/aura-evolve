@@ -1,4 +1,4 @@
-;; Propose -> gate -> race vs current main -> KEEP or DROP/heal.
+;; Propose → gate → race vs current main → KEEP or DROP/heal.
 ;; The host writes a (lambda (age own other) ...) file. Soft does not speak HTTP.
 ;; ev:shadow is the current main body. ev:choose is the trial.
 ;; KEEP only when the trial score is strictly greater. A tie DROPs.

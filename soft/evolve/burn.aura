@@ -1,4 +1,4 @@
-;; Multi-round propose -> gate -> play. Horizon defaults to 24 (smaller than M0).
+;; Multi-round propose → gate → play. Horizon defaults to 24 (smaller than M0).
 ;; Each round reads EVOLVE_ROUND_DIR/<n>.lambda. KEEP only on a strict improvement.
 (load "/workspace/aura-evolve/soft/evolve/world.aura")
 (load "/workspace/aura-evolve/soft/evolve/strategy.aura")
