@@ -1,0 +1,95 @@
+;; Two strategy slots. M0 races them host-sequential on one seed.
+;; The better body is stamped into the main slot. The worse is dropped.
+;; No fiber:spawn here, so the stamp is never fiber_live.
+;; No hot-strategy:swap! yet: the slot is a Soft binding, not a fake swap.
+
+(define *score-agg* 0)
+(define *score-calm* 0)
+(define *keep-mid* 0)
+(define *drop-mid* 0)
+(define *keep-reason* "boot")
+(define *drop-reason* "boot")
+(define *main-name* "none")
+(define *main-mid* 0)
+(define *main-score* 0)
+(define *world-line* "host-sequential")
+
+;; strat-agg (mid 1): short green, chase the longer queue.
+(define (strat-agg age own other)
+  (cond
+    ((>= age 4) 1)
+    ((and (>= age 2) (> other own)) 1)
+    (#t 0)))
+
+;; strat-calm (mid 2): hold a long green; switch only when idle or capped.
+(define (strat-calm age own other)
+  (cond
+    ((>= age 12) 1)
+    ((and (>= age 8) (= own 0) (> other 0)) 1)
+    (#t 0)))
+
+(define (ev:run! chooser tag tape)
+  (set! *tape* tape)
+  (ev:reset! *seed*)
+  (let loop ((i 0))
+    (if (< i *horizon*)
+        (begin
+          (ev:tick! chooser tag)
+          (loop (+ i 1)))))
+  (ev:score))
+
+;; Fork by reset to the same seed, twice, on the host. Not fibers.
+(define (ev:race!)
+  (set! *world-line* "host-sequential")
+  (set! *score-agg* (ev:run! strat-agg "strat-agg" 0))
+  (set! *score-calm* (ev:run! strat-calm "strat-calm" 0))
+  (if (>= *score-agg* *score-calm*)
+      (begin
+        (set! *keep-mid* 1)
+        (set! *drop-mid* 2)
+        (set! *main-mid* 1)
+        (set! *main-name* "strat-agg")
+        (set! *keep-reason*
+              (if (> *score-agg* *score-calm*)
+                  "higher-score-stamp"
+                  "tie-keep-agg-stamp"))
+        (set! *drop-reason* "lower-score-rollback")
+        (set! *main-score* (ev:run! strat-agg "strat-agg" 1)))
+      (begin
+        (set! *keep-mid* 2)
+        (set! *drop-mid* 1)
+        (set! *main-mid* 2)
+        (set! *main-name* "strat-calm")
+        (set! *keep-reason* "higher-score-stamp")
+        (set! *drop-reason* "lower-score-rollback")
+        (set! *main-score* (ev:run! strat-calm "strat-calm" 1))))
+  *main-mid*)
+
+(define (ev:audit!)
+  (display "RACE agg=")
+  (display (nstr *score-agg*))
+  (display " calm=")
+  (display (nstr *score-calm*))
+  (newline)
+  (display "WORLD line=")
+  (display *world-line*)
+  (display " joins=0/2")
+  (newline)
+  (display "MAIN slot=")
+  (display *main-name*)
+  (display " mid=")
+  (display (number->string *main-mid*))
+  (display " score=")
+  (display (nstr *main-score*))
+  (newline)
+  (display "KEEP mid=")
+  (display (number->string *keep-mid*))
+  (display " reason=")
+  (display *keep-reason*)
+  (newline)
+  (display "DROP mid=")
+  (display (number->string *drop-mid*))
+  (display " reason=")
+  (display *drop-reason*)
+  (newline)
+  0)

@@ -1,0 +1,65 @@
+;; Dual worldline race. Prints KEEP/DROP and EVOLVE_M0_OK.
+(load "/workspace/aura-evolve/soft/evolve/world.aura")
+(load "/workspace/aura-evolve/soft/evolve/strategy.aura")
+
+(define *fail* 0)
+
+(define (expect tag got want)
+  (display tag)
+  (display "=")
+  (display (nstr got))
+  (if (= got want)
+      (display " OK")
+      (begin
+        (display " WANT=")
+        (display (nstr want))
+        (set! *fail* (+ *fail* 1))))
+  (newline)
+  got)
+
+(display "DIALECT=")
+(display (ev:dialect))
+(newline)
+
+(expect "HORIZON" *horizon* 60)
+(expect "SEED" *seed* 20261005)
+(ev:race!)
+(ev:audit!)
+
+(expect "TICK" *tick* 60)
+(expect "STOP_W" *stop-w* 3)
+(expect "MAIN_MID" *main-mid* *keep-mid*)
+(expect "LIVE_SCORE" (ev:score) *main-score*)
+
+(if (not (string=? *world-line* "host-sequential"))
+    (begin
+      (display "WORLD_FAIL")
+      (newline)
+      (set! *fail* (+ *fail* 1))))
+
+(if (not (or (and (>= *score-agg* *score-calm*) (= *keep-mid* 1) (= *drop-mid* 2))
+             (and (< *score-agg* *score-calm*) (= *keep-mid* 2) (= *drop-mid* 1))))
+    (begin
+      (display "KEEP_FAIL")
+      (newline)
+      (set! *fail* (+ *fail* 1))))
+
+(if (<= *throughput* 0)
+    (begin
+      (display "THRU_FAIL")
+      (newline)
+      (set! *fail* (+ *fail* 1))))
+
+(if (or (< *q-ns* 0) (< *q-ew* 0))
+    (begin
+      (display "QUEUE_FAIL")
+      (newline)
+      (set! *fail* (+ *fail* 1))))
+
+(if (= *fail* 0)
+    (begin
+      (display "EVOLVE_M0_OK")
+      (newline))
+    (begin
+      (display "EVOLVE_M0_FAIL")
+      (newline)))
