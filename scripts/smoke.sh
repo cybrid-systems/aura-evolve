@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stack: M0 host-sequential, M1 hot-strategy + worldline, M2 fixture propose,
-# optional live MiniMax (SKIP when no key), fixture burn.
+# optional live MiniMax (SKIP when no key), fixture burn, M3 grid + PK.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$ROOT/out"
@@ -43,5 +43,10 @@ fi
 
 echo "smoke: fixture burn"
 EVOLVE_PROPOSE=0 bash "$ROOT/scripts/burn.sh"
+
+bash "$ROOT/scripts/smoke_m3.sh"
+
+echo "smoke: pk fixtures"
+EVOLVE_PROPOSE=0 bash "$ROOT/scripts/burn_pk.sh"
 
 echo "smoke: EVOLVE_SMOKE_OK"
