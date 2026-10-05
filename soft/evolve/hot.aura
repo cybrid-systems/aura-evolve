@@ -1,0 +1,152 @@
+;; Hot strategy slot + honest dual worldline.
+;; One chooser name ev:choose, one shadow name ev:shadow (the current main).
+;; swap! / heal! are std/hot-strategy. eval-current stays inside those calls.
+;; fiber_live only when every race spawned two distinct fibers and both joins
+;; returned a numeric score. Otherwise the same thunks run host-sequential.
+;; M0 does not load this file and does not stamp fiber_live.
+
+(require "std/hot-strategy" all:)
+(require "std/string" all:)
+
+(define *agg-body*
+  "(lambda (age own other) (if (>= age 4) 1 (if (and (>= age 2) (> other own)) 1 0)))")
+(define *chase-body*
+  "(lambda (age own other) (if (> other own) 1 0))")
+(define *main-body* *agg-body*)
+(define *strategy-seeded* 0)
+(define *race-backend* 0)
+(define *race-spawned* 0)
+(define *race-joined* 0)
+(define *base-last* 0)
+(define *trial-last* 0)
+(define *propose-tag* "boot")
+
+(define *seed-src*
+  (string-append
+   "(define (ev:choose age own other) (if (>= age 4) 1 (if (and (>= age 2) (> other own)) 1 0)))\n"
+   "(define (ev:shadow age own other) (if (>= age 4) 1 (if (and (>= age 2) (> other own)) 1 0)))\n"))
+
+(define (ev:strategy-seed!)
+  (if (= *strategy-seeded* 1)
+      (list #t "seed")
+      (let ((sc (try (set-code *seed-src*) (catch (e) e))))
+        (if (not (equal? sc #t))
+            (list #f "seed")
+            (begin
+              (eval-current)
+              (hot-strategy:register! "ev:choose" *agg-body*)
+              (set! *main-body* *agg-body*)
+              (set! *strategy-seeded* 1)
+              (set! *race-backend* 0)
+              (set! *race-spawned* 0)
+              (set! *race-joined* 0)
+              (if (and (number? (try (ev:choose 4 0 0) (catch (e) #f)))
+                       (number? (try (ev:shadow 4 0 0) (catch (e) #f))))
+                  (list #t "seed")
+                  (list #f "probe")))))))
+
+(define (ev:bad-body? s)
+  (or (string-contains? s "set!")
+      (string-contains? s "vector-set!")
+      (string-contains? s "display")
+      (string-contains? s "mutate")
+      (string-contains? s "eval")
+      (string-contains? s "load")
+      (string-contains? s "shell")
+      (string-contains? s "http")
+      (string-contains? s "ev:reset")
+      (string-contains? s "ev:tick")
+      (string-contains? s "ev:race")
+      (string-contains? s "fiber:")))
+
+(define (ev:body-ok? body)
+  (and (string? body)
+       (> (string-length body) 20)
+       (< (string-length body) 2000)
+       (string-prefix? body "(lambda")
+       (string-contains? body "age")
+       (string-contains? body "own")
+       (string-contains? body "other")
+       (not (ev:bad-body? body))))
+
+(define (ev:probe-choose!)
+  (let ((v (try (ev:choose 4 1 2) (catch (e) #f))))
+    (and (number? v) (or (= v 0) (= v 1)))))
+
+(define (ev:apply-body! body reason)
+  (let ((clean (if (string? body) (string-trim body) "")))
+    (cond
+      ((not (ev:body-ok? clean))
+       (display "GATE reject reason=gate")
+       (newline)
+       (list #f "gate"))
+      (#t
+       (let ((sw (hot-strategy:swap! "ev:choose" clean reason)))
+         (if (not (and (pair? sw) (equal? (car sw) #t)))
+             (begin
+               (display "GATE reject reason=swap")
+               (newline)
+               (list #f "swap"))
+             (if (ev:probe-choose!)
+                 (begin
+                   (display "SWAP name=ev:choose tick=")
+                   (display (number->string *tick*))
+                   (display " reason=")
+                   (display reason)
+                   (newline)
+                   (list #t "swap"))
+                 (begin
+                   (hot-strategy:heal!)
+                   (display "HEAL name=ev:choose tick=")
+                   (display (number->string *tick*))
+                   (display " reason=probe")
+                   (newline)
+                   (list #f "probe")))))))))
+
+(define (ev:race-thunks! thunk-a thunk-b)
+  (set! *race-spawned* (+ *race-spawned* 2))
+  (let ((b (try (fiber:spawn-backend) (catch (e) 0))))
+    (if (and (number? b) (> b 0))
+        (set! *race-backend* b))
+    (let* ((f1 (try (fiber:spawn thunk-a) (catch (e) #f)))
+           (f2 (try (fiber:spawn thunk-b) (catch (e) #f)))
+           (r1 (if (and (number? f1) (> f1 0))
+                   (try (fiber:join f1) (catch (e) #f))
+                   #f))
+           (r2 (if (and (number? f2) (> f2 0))
+                   (try (fiber:join f2) (catch (e) #f))
+                   #f)))
+      (if (and (number? f1) (number? f2)
+               (> f1 0) (> f2 0)
+               (not (= f1 f2))
+               (number? r1) (number? r2))
+          (begin
+            (set! *race-joined* (+ *race-joined* 2))
+            (list r1 r2))
+          (list (thunk-a) (thunk-b))))))
+
+(define (ev:finish-world!)
+  (if (and (> *race-spawned* 0)
+           (= *race-joined* *race-spawned*)
+           (> *race-backend* 0))
+      (set! *world-line* "fiber_live")
+      (set! *world-line* "host-sequential"))
+  *world-line*)
+
+(define (ev:stamp-world!)
+  (ev:finish-world!)
+  (display "WORLD line=")
+  (display *world-line*)
+  (display " backend=")
+  (display (number->string *race-backend*))
+  (display " joins=")
+  (display (number->string *race-joined*))
+  (display "/")
+  (display (number->string *race-spawned*))
+  (newline)
+  *world-line*)
+
+(define (ev:sync-main!)
+  (hot-strategy:swap! "ev:shadow" *main-body* "shadow")
+  (hot-strategy:swap! "ev:choose" *main-body* "choose")
+  *main-body*)
