@@ -73,6 +73,8 @@
   (let ((v (try (ev:choose 4 1 2) (catch (e) #f))))
     (and (number? v) (or (= v 0) (= v 1)))))
 
+;; Install a lambda string into ev:choose. Does not touch ev:shadow.
+;; Gate reject leaves the slot alone. A non 0/1 probe heal!s the pre-swap snap.
 (define (ev:apply-body! body reason)
   (let ((clean (if (string? body) (string-trim body) "")))
     (cond
