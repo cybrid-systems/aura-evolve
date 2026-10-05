@@ -1,0 +1,46 @@
+;; Multi-round propose -> gate -> play. Horizon defaults to 24 (smaller than M0).
+;; Each round reads EVOLVE_ROUND_DIR/<n>.lambda. KEEP only on a strict improvement.
+(load "/workspace/aura-evolve/soft/evolve/world.aura")
+(load "/workspace/aura-evolve/soft/evolve/strategy.aura")
+(load "/workspace/aura-evolve/soft/evolve/propose.aura")
+
+(define (ev:env-int name fallback)
+  (let ((raw (getenv name)))
+    (if (and (string? raw) (> (string-length raw) 0))
+        (let ((n (string->number raw)))
+          (if (number? n) n fallback))
+        fallback)))
+
+(define (ev:burn!)
+  (let ((dir (getenv "EVOLVE_ROUND_DIR"))
+        (rounds (ev:env-int "EVOLVE_BURN_ROUNDS" 3))
+        (hz (ev:env-int "EVOLVE_HORIZON" 24)))
+    (set! *horizon* hz)
+    (display "BURN rounds=")
+    (display (number->string rounds))
+    (display " horizon=")
+    (display (number->string hz))
+    (newline)
+    (if (not (and (string? dir) (> (string-length dir) 0)))
+        (display "EVOLVE_BURN_FAIL dir\n")
+        (let ((seeded (ev:strategy-seed!)))
+          (if (not (and (pair? seeded) (equal? (car seeded) #t)))
+              (display "EVOLVE_BURN_FAIL seed\n")
+              (begin
+                (let loop ((i 1))
+                  (if (> i rounds)
+                      0
+                      (begin
+                        (display "BURN_ROUND=")
+                        (display (number->string i))
+                        (newline)
+                        (ev:propose-file!
+                         (string-append dir "/" (number->string i) ".lambda"))
+                        (loop (+ i 1)))))
+                (ev:stamp-world!)
+                (display "MAIN score=")
+                (display (nstr *main-score*))
+                (newline)
+                (display "EVOLVE_BURN_OK\n")))))))
+
+(ev:burn!)
