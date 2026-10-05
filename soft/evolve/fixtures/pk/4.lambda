@@ -1,0 +1,1 @@
+(lambda (age own other) (if (or (>= age 8) (> other own)) 1 0))
