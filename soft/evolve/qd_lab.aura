@@ -1,0 +1,209 @@
+;; qd_lab.aura — MAP-Elites (std/qd) over the traffic worlds.
+;;
+;; M2 replaces "strictly greater than the champion" with a quality-diversity
+;; archive: descriptors are (throughput, stops), quality is the integer score.
+;; M3 runs the same archive on the two-node corridor and keeps a policy pair.
+;;
+;; The safety boundary is unchanged and is not on the honour system:
+;;   * every candidate goes through ev:apply-body! (forbidden-token gate,
+;;     hot-strategy swap, 0/1 probe, heal on a bad probe);
+;;   * a candidate below the score floor is never inserted;
+;;   * the invariant fields (throughput >= 0, stops >= 0, no negative queue)
+;;     are checked before insert.
+;; A rejected candidate is logged as ROLLBACK, never as KEEP.
+;;
+;; Every evaluation is one evo:record! (kind=record, v=2). The tape is a
+;; view of that log (scripts/tape_from_evo_log.py), not a second truth.
+
+(require "std/qd" all:)
+
+(define *qd-run* "qd")
+(define *qd-rng* 1)
+(define *qd-evals* 0)
+(define *qd-floor* -100000)
+(define *qd-map* #f)
+(define *qd-tip* "")
+
+;; ── deterministic RNG (independent of the sim's LCG) ─────────────────
+(define (ql-rand!)
+  (set! *qd-rng* (modulo (+ (* *qd-rng* 1103515245) 12345) 2147483648))
+  *qd-rng*)
+
+(define (ql-rand-int n)
+  (if (<= n 1) 0 (modulo (ql-rand!) n)))
+
+;; ── policy family ────────────────────────────────────────────────────
+;; gene g = age at which the green is force-switched
+;; gene a = earliest age at which the queue rule may switch
+;; gene c = queue rule: 0 other>own, 1 other>own+1, 2 other>own+2,
+;;          3 switch only when our direction is empty and the other is not
+(define (ql-chase-text c)
+  (cond ((= c 0) "(> other own)")
+        ((= c 1) "(> other (+ own 1))")
+        ((= c 2) "(> other (+ own 2))")
+        (#t "(and (= own 0) (> other 0))")))
+
+(define (ql-body g a c)
+  (string-append
+   "(lambda (age own other) (cond ((>= age " (number->string g) ") 1) "
+   "((and (>= age " (number->string a) ") " (ql-chase-text c) ") 1) (#t 0)))"))
+
+(define (ql-policy g a c)
+  (lambda (age own other)
+    (cond ((>= age g) 1)
+          ((and (>= age a)
+                (cond ((= c 0) (> other own))
+                      ((= c 1) (> other (+ own 1)))
+                      ((= c 2) (> other (+ own 2)))
+                      (#t (and (= own 0) (> other 0)))))
+           1)
+          (#t 0))))
+
+(define (ql-gene-ok? g a c)
+  (and (>= g 2) (<= g 40) (>= a 0) (<= a 12) (>= c 0) (<= c 3)))
+
+;; ── log one observation ──────────────────────────────────────────────
+;; decision is KEEP when the archive took the candidate, ROLLBACK otherwise.
+;; objectives are (min score-negated, min stops): the CLI front is min/min,
+;; so the front is exactly "high score, few stops".
+(define (ql-note! target decision reason body score thru stops gen slot safe)
+  (evo:record! target decision reason
+               (hash "score" score "throughput" thru "stops" stops
+                     "coverage" 0 "gen" gen)
+               body 0 ""
+               (hash "algo" "map-elites" "gen" gen "slot" slot
+                     "search" *qd-run*
+                     "candidate" (number->string slot)
+                     "behavior" (list thru stops)
+                     "objectives" (list (- 0 score) stops)
+                     "constraints" (hash "safe" safe))))
+
+;; ── log helpers ──────────────────────────────────────────────────────
+;; The parent is the previous QD record (not the raw worldline tip): a
+;; hot-strategy swap also appends mutate:rebind records, and the CLI drops
+;; those from a run that carries its own verdicts. An explicit parent keeps
+;; the lineage chain whole inside --lineage.
+;; Only KEEP carries objectives, so the CLI front is the set of archive
+;; advances, not every rejected cell probe.
+(define (ql-record! target decision why body score thru stops gen slot safe with-obj)
+  (let* ((parent *qd-tip*)
+         (extras (if with-obj
+                     (hash "algo" "map-elites" "gen" gen "slot" slot
+                           "search" *qd-run*
+                           "candidate" (number->string slot)
+                           "parents" (if (string=? parent "") (list) (list parent))
+                           "behavior" (list thru stops)
+                           "objectives" (list (- 0 score) stops)
+                           "constraints" (hash "safe" safe))
+                     (hash "algo" "map-elites" "gen" gen "slot" slot
+                           "search" *qd-run*
+                           "candidate" (number->string slot)
+                           "parents" (if (string=? parent "") (list) (list parent))
+                           "behavior" (list thru stops)
+                           "constraints" (hash "safe" safe))))
+         (id (evo:record! target decision why
+                          (hash "score" score "throughput" thru "stops" stops
+                                "gen" gen
+                                "coverage" (if *qd-map* (qd:coverage *qd-map*) 0))
+                          body 0 parent extras)))
+    (if (and (string? id) (string=? decision "KEEP"))
+        (set! *qd-tip* id))
+    id))
+
+(define (ql-rollback! target why body score thru stops gen slot safe)
+  (ql-record! target "ROLLBACK" why body score thru stops gen slot safe #f))
+
+(define (ql-keep! target body score thru stops gen slot cand m)
+  (let* ((ok (qd:insert! m cand score (list thru stops)))
+         (why (if ok "cell-new-or-better" "cell-dominated")))
+    (ql-record! target (if ok "KEEP" "ROLLBACK") why body score thru stops
+                gen slot 0 ok)
+    ok))
+
+(define (ql-safe-fail score thru stops qns0 qew0 qns1 qew1)
+  (cond ((< score *qd-floor*) "constraint:score-floor")
+        ((or (< thru 0) (< stops 0) (< qns0 0) (< qew0 0)
+             (< qns1 0) (< qew1 0))
+         "constraint:invariant")
+        (#t #f)))
+
+(define (ql-m2-try! m g a c gen)
+  (set! *qd-evals* (+ *qd-evals* 1))
+  (let* ((body (ql-body g a c))
+         (slot *qd-evals*)
+         (gate (ev:apply-body! body "qd-m2")))
+    (if (not (and (pair? gate) (equal? (car gate) #t)))
+        (begin
+          (ql-rollback! "ev:choose"
+                        (string-append "gate:"
+                                       (if (pair? gate) (car (cdr gate)) "?"))
+                        body 0 0 0 gen slot 1)
+          #f)
+        (let* ((score (ev:run! ev:choose "qd-cand" 0))
+               (thru *throughput*)
+               (stops *stops*)
+               (bad (ql-safe-fail score thru stops *q-ns* *q-ew* 0 0)))
+          (if bad
+              (begin
+                (ql-rollback! "ev:choose" bad body score thru stops gen slot 1)
+                #f)
+              (ql-keep! "ev:choose" body score thru stops gen slot
+                        (hash "kind" "qd-cand" "genome" body "gen" gen
+                              "meta" (hash "g" g "a" a "c" c))
+                        m))))))
+
+;; ── M3: gate both nodes, evaluate the pair ───────────────────────────
+(define (ql-m3-try! m p q gen)
+  (set! *qd-evals* (+ *qd-evals* 1))
+  (let* ((g0 (car p)) (a0 (car (cdr p))) (c0 (car (cdr (cdr p))))
+         (g1 (car q)) (a1 (car (cdr q))) (c1 (car (cdr (cdr q))))
+         (b0 (ql-body g0 a0 c0))
+         (b1 (ql-body g1 a1 c1))
+         (both (string-append "pair n0=" b0 " n1=" b1))
+         (slot *qd-evals*)
+         (gate0 (ev:apply-body! b0 "qd-m3-n0"))
+         (gate1 (ev:apply-body! b1 "qd-m3-n1")))
+    (if (not (and (pair? gate0) (equal? (car gate0) #t)
+                  (pair? gate1) (equal? (car gate1) #t)))
+        (begin
+          (ql-rollback! "corridor" "gate:pair" both 0 0 0 gen slot 1)
+          #f)
+        (let* ((score (ev:grid-run! (ql-policy g0 a0 c0)
+                                    (ql-policy g1 a1 c1) "qd-pair" 0))
+               (thru *g-thru*)
+               (stops *g-stops*)
+               (bad (ql-safe-fail score thru stops
+                                  (g:qns 0) (g:qew 0) (g:qns 1) (g:qew 1))))
+          (if bad
+              (begin
+                (ql-rollback! "corridor" bad both score thru stops gen slot 1)
+                #f)
+              (ql-keep! "corridor" both score thru stops gen slot
+                        (hash "kind" "qd-cand" "genome" both "gen" gen
+                              "meta" (hash "g0" g0 "a0" a0 "c0" c0
+                                           "g1" g1 "a1" a1 "c1" c1))
+                        m))))))
+
+;; ── mutation of one gene ─────────────────────────────────────────────
+(define (ql-mutate p)
+  (let* ((g (car p)) (a (car (cdr p))) (c (car (cdr (cdr p))))
+         (which (ql-rand-int 3))
+         (up (if (= (ql-rand-int 2) 0) -1 1)))
+    (cond ((= which 0) (list (max 2 (min 40 (+ g (* up 2)))) a c))
+          ((= which 1) (list g (max 0 (min 12 (+ a (* up 2)))) c))
+          (#t (list g a (max 0 (min 3 (+ c up))))))))
+
+;; ── report ───────────────────────────────────────────────────────────
+(define (ql-report! m label)
+  (let ((best (qd:best m)))
+    (display label)
+    (display " evals=") (display (number->string *qd-evals*))
+    (display " elites=") (display (number->string (length (qd:elites m))))
+    (display " coverage=") (display (number->string
+                                     (inexact->exact (round (* 100 (qd:coverage m))))))
+    (display " best=") (display (nstr (inexact->exact (qd-opt best "quality" 0))))
+    (display " best-cell=") (display
+                             (let ((b (qd-opt best "behavior" (list))))
+                               (string-append (number->string (car b)) "x"
+                                              (number->string (car (cdr b))))))
+    (newline)))

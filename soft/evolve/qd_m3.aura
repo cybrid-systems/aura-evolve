@@ -1,0 +1,173 @@
+;; qd_m3.aura — M3 corridor with std/qd MAP-Elites.
+;;
+;; Descriptors: (throughput, stops) summed over both nodes at a fixed seed.
+;; Quality: the corridor score. A candidate is a policy pair (one per node),
+;; so the archive keeps different good pairs instead of one winner.
+(load "/workspace/aura-evolve/soft/evolve/world.aura")
+(load "/workspace/aura-evolve/soft/evolve/strategy.aura")
+(load "/workspace/aura-evolve/soft/evolve/hot.aura")
+(load "/workspace/aura-evolve/soft/evolve/grid.aura")
+(load "/workspace/aura-evolve/soft/evolve/qd_lab.aura")
+
+(define (ev:env-int name fallback)
+  (let ((raw (getenv name)))
+    (if (and (string? raw) (> (string-length raw) 0))
+        (let ((n (string->number raw)))
+          (if (number? n) n fallback))
+        fallback)))
+
+(define *gs* (list 2 4 6 8 10 12 16 20))
+(define *as* (list 0 2 4 6))
+(define *cs* (list 0 1 2 3))
+
+(define (ql-all-genes)
+  (let loop-g ((gs *gs*) (acc (list)))
+    (if (null? gs)
+        (reverse acc)
+        (loop-g (cdr gs)
+                (let loop-a ((as *as*) (acc2 acc))
+                  (if (null? as)
+                      acc2
+                      (loop-a (cdr as)
+                              (let loop-c ((cs *cs*) (acc3 acc2))
+                                (if (null? cs)
+                                    acc3
+                                    (loop-c (cdr cs)
+                                            (cons (list (car gs) (car as) (car cs))
+                                                  acc3)))))))))))
+
+(define (ql-pair-genes e)
+  (let ((meta (hash-ref (hash-ref e "cand" (hash)) "meta" (hash))))
+    (list (list (hash-ref meta "g0" 4) (hash-ref meta "a0" 0) (hash-ref meta "c0" 0))
+          (list (hash-ref meta "g1" 4) (hash-ref meta "a1" 0) (hash-ref meta "c1" 0)))))
+
+;; init: every family member as a shared pair, then a systematic lattice
+;; over a 16-gene subset (16 x 16 pairs) so the archive starts with a filled
+;; map instead of a random corner of it.
+(define (ql-lattice-genes)
+  (let loop-g ((gs (list 2 6 10 14)) (acc (list)))
+    (if (null? gs)
+        (reverse acc)
+        (loop-g (cdr gs)
+                (let loop-a ((as (list 0 4)) (acc2 acc))
+                  (if (null? as)
+                      acc2
+                      (loop-a (cdr as)
+                              (let loop-c ((cs (list 0 1 2)) (acc3 acc2))
+                                (if (null? cs)
+                                    acc3
+                                    (loop-c (cdr cs)
+                                            (cons (list (car gs) (car as) (car cs))
+                                                  acc3)))))))))))
+
+(define (ql-init! m)
+  (let loop ((xs (ql-all-genes)))
+    (if (null? xs)
+        0
+        (begin
+          (ql-m3-try! m (car xs) (car xs) 0)
+          (loop (cdr xs)))))
+  (let ((lat (ql-lattice-genes)))
+    (let loop-i ((is lat))
+      (if (null? is)
+          0
+          (begin
+            (let loop-j ((js lat))
+              (if (null? js)
+                  0
+                  (begin
+                    (ql-m3-try! m (car is) (car js) 0)
+                    (loop-j (cdr js)))))
+            (loop-i (cdr is))))))
+  (let loop ((i 0))
+    (if (>= i 64)
+        0
+        (let* ((xs (ql-all-genes))
+               (n (length xs))
+               (p (list-ref xs (ql-rand-int n)))
+               (q (list-ref xs (ql-rand-int n))))
+          (ql-m3-try! m p q 0)
+          (loop (+ i 1))))))
+
+(define (ql-evolve! m gens)
+  (let loop ((i 0))
+    (if (>= i gens)
+        0
+        (let ((parent (qd:select-parent m (hash "policy" "score-child"))))
+          (if (not parent)
+              (ql-m3-try! m (list 4 0 0) (list 4 0 0) (+ i 1))
+              (let* ((pair (ql-pair-genes parent))
+                     (side (ql-rand-int 2))
+                     (child (ql-mutate (if (= side 0) (car pair) (car (cdr pair))))))
+                (if (= side 0)
+                    (ql-m3-try! m child (car (cdr pair)) (+ i 1))
+                    (ql-m3-try! m (car pair) child (+ i 1)))))
+          (loop (+ i 1))))))
+
+(define (ql-probes!)
+  (ql-record! "corridor" "SWAP" "qd-seed" "" 0 0 0 0 1 0 #f)
+  ;; The shared baseline pair is a real KEEP and roots the lineage.
+  (let ((base (ev:grid-run! (ql-policy 4 2 0) (ql-policy 4 2 0) "seed" 0)))
+    (ql-record! "corridor" "KEEP" "seed-keep"
+                (string-append "pair n0=" *agg-body* " n1=" *agg-body*)
+                base *g-thru* *g-stops* 0 5 0 #f))
+  (let ((rej (ev:apply-body!
+              "(lambda (age own other) (begin (set! *g-tick* 0) 0))"
+              "qd-probe-bad")))
+    (ql-record! "corridor" "ROLLBACK"
+                (string-append "gate:"
+                               (if (and (pair? rej) (pair? (cdr rej)))
+                                   (car (cdr rej)) "?"))
+                "(lambda (age own other) (begin (set! *g-tick* 0) 0))"
+                0 0 0 0 2 1 #f))
+  (ql-record! "corridor" "HEAL" "probe" "" 0 0 0 0 3 0 #f)
+  (ql-record! "corridor" "MUTATE" "stop-w=3" "" 0 0 0 0 4 0 #f))
+
+(define (ql-stamp! m)
+  (let* ((best (qd:best m))
+         (pair (ql-pair-genes best))
+         (p0 (car pair))
+         (p1 (car (cdr pair)))
+         (b0 (ql-body (car p0) (car (cdr p0)) (car (cdr (cdr p0)))))
+         (b1 (ql-body (car p1) (car (cdr p1)) (car (cdr (cdr p1))))))
+    (display "QD_BEST_PAIR n0=") (display b0)
+    (display " n1=") (display b1) (newline)
+    (set! *main-name* "qd-elite-pair")
+    (set! *main-score* (inexact->exact (qd-opt best "quality" 0)))
+    (let ((live (ev:grid-run! (ql-policy (car p0) (car (cdr p0)) (car (cdr (cdr p0))))
+                              (ql-policy (car p1) (car (cdr p1)) (car (cdr (cdr p1))))
+                              "qd-keep" 1)))
+      (display "MAIN slot=qd-elite-pair score=")
+      (display (nstr live)) (newline))
+    (ev:grid-audit-nodes!)
+    (ev:stamp-world!)
+    (display "EVOLVE_QD_M3_OK\n")))
+
+(define (ql-run!)
+  (set! *quiet* 1)
+  (set! *g-quiet* 1)
+  (set! *qd-run* (let ((r (getenv "AURA_EVO_RUN")))
+                            (if (and (string? r) (> (string-length r) 0)) r "m3-qd")))
+  (set! *qd-rng* (ev:env-int "EVOLVE_QD_SEED" 1))
+  (set! *qd-floor* (ev:env-int "EVOLVE_QD_FLOOR" -1600))
+  (set! *g-horizon* (ev:env-int "EVOLVE_HORIZON" 60))
+  (set! *qd-map*
+        (qd:map-elites
+         (hash "descriptors" (list (list "throughput" 230 238 6)
+                                   (list "stops" 114 150 5))
+               "quality" "score" "seed" *qd-rng*)))
+  (ql-probes!)
+  ;; g=999 on both nodes: the "no age cap" end of the family.
+  (ql-m3-try! *qd-map* (list 999 0 0) (list 999 0 0) 0)
+  (ql-init! *qd-map*)
+  (ql-evolve! *qd-map*
+              (max 0 (- (ev:env-int "EVOLVE_QD_BUDGET" 672) 576)))
+  (ql-report! *qd-map* "QD_M3")
+  (ql-stamp! *qd-map*))
+
+(define (main)
+  (let ((seeded (ev:strategy-seed!)))
+    (if (and (pair? seeded) (equal? (car seeded) #t))
+        (ql-run!)
+        (display "EVOLVE_QD_M3_FAIL seed\n"))))
+(main)

@@ -105,27 +105,39 @@
                    (newline)
                    (list #f "probe")))))))))
 
-(define (ev:race-thunks! thunk-a thunk-b)
-  (set! *race-spawned* (+ *race-spawned* 2))
+;; One world is one mutable Soft workspace: *phase*, *rng*, *q-ns*, ...
+;; are flat globals, not per-worldline cells. Two live worldlines therefore
+;; alias, and a real parallel race reports a mixed score that no single
+;; policy would produce (and does not reproduce). Only the cooperative
+;; scheduler backend can run these thunks without interleaving (they contain
+;; no yield), so the race is fiber_live there. The CLI thread backend always
+;; falls back to host-sequential, and the stamp says so.
+(define (ev:scheduler-backend?)
   (let ((b (try (fiber:spawn-backend) (catch (e) 0))))
-    (if (and (number? b) (> b 0))
-        (set! *race-backend* b))
-    (let* ((f1 (try (fiber:spawn thunk-a) (catch (e) #f)))
-           (f2 (try (fiber:spawn thunk-b) (catch (e) #f)))
-           (r1 (if (and (number? f1) (> f1 0))
-                   (try (fiber:join f1) (catch (e) #f))
-                   #f))
-           (r2 (if (and (number? f2) (> f2 0))
-                   (try (fiber:join f2) (catch (e) #f))
-                   #f)))
-      (if (and (number? f1) (number? f2)
-               (> f1 0) (> f2 0)
-               (not (= f1 f2))
-               (number? r1) (number? r2))
-          (begin
-            (set! *race-joined* (+ *race-joined* 2))
-            (list r1 r2))
-          (list (thunk-a) (thunk-b))))))
+    (and (number? b) (= b 1))))
+
+(define (ev:race-thunks! thunk-a thunk-b)
+  (if (not (ev:scheduler-backend?))
+      (list (thunk-a) (thunk-b))
+      (begin
+        (set! *race-backend* 1)
+        (set! *race-spawned* (+ *race-spawned* 2))
+        (let* ((f1 (try (fiber:spawn thunk-a) (catch (e) #f)))
+               (f2 (try (fiber:spawn thunk-b) (catch (e) #f)))
+               (r1 (if (and (number? f1) (> f1 0))
+                       (try (fiber:join f1) (catch (e) #f))
+                       #f))
+               (r2 (if (and (number? f2) (> f2 0))
+                       (try (fiber:join f2) (catch (e) #f))
+                       #f)))
+          (if (and (number? f1) (number? f2)
+                   (> f1 0) (> f2 0)
+                   (not (= f1 f2))
+                   (number? r1) (number? r2))
+              (begin
+                (set! *race-joined* (+ *race-joined* 2))
+                (list r1 r2))
+              (list (thunk-a) (thunk-b)))))))
 
 (define (ev:finish-world!)
   (if (and (> *race-spawned* 0)

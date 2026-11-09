@@ -1,0 +1,122 @@
+;; qd_m2.aura — M2 with std/qd MAP-Elites instead of the strict-greater gate.
+;;
+;; Descriptors: (throughput, stops) of one intersection at a fixed sim seed.
+;; Quality: the integer score (higher is better).
+;; The archive replaces "one champion body"; a kept elite is still stamped
+;; into the live ev:choose slot after the search.
+(load "/workspace/aura-evolve/soft/evolve/world.aura")
+(load "/workspace/aura-evolve/soft/evolve/strategy.aura")
+(load "/workspace/aura-evolve/soft/evolve/hot.aura")
+(load "/workspace/aura-evolve/soft/evolve/qd_lab.aura")
+
+(define (ev:env-int name fallback)
+  (let ((raw (getenv name)))
+    (if (and (string? raw) (> (string-length raw) 0))
+        (let ((n (string->number raw)))
+          (if (number? n) n fallback))
+        fallback)))
+
+(define *gs* (list 2 4 6 8 10 12 16 20))
+(define *as* (list 0 2 4 6))
+(define *cs* (list 0 1 2 3))
+
+(define (ql-init-sweep! m)
+  (let loop-g ((gs *gs*))
+    (if (null? gs) 0
+        (begin
+          (let loop-a ((as *as*))
+            (if (null? as) 0
+                (begin
+                  (let loop-c ((cs *cs*))
+                    (if (null? cs) 0
+                        (begin
+                          (ql-m2-try! m (car gs) (car as) (car cs) 0)
+                          (loop-c (cdr cs)))))
+                  (loop-a (cdr as)))))
+          (loop-g (cdr gs))))))
+
+(define (ql-entry-genes e)
+  (let ((meta (hash-ref (hash-ref e "cand" (hash)) "meta" (hash))))
+    (list (hash-ref meta "g" 4) (hash-ref meta "a" 0) (hash-ref meta "c" 0))))
+
+(define (ql-evolve! m gens)
+  (let loop ((i 0))
+    (if (>= i gens)
+        0
+        (let ((parent (qd:select-parent m (hash "policy" "score-child"))))
+          (if (not parent)
+              (ql-m2-try! m 4 0 0 (+ i 1))
+              (let ((child (ql-mutate (ql-entry-genes parent))))
+                (ql-m2-try! m (car child) (car (cdr child)) (car (cdr (cdr child)))
+                            (+ i 1))))
+          (loop (+ i 1))))))
+
+(define (main)
+  (let ((seeded (ev:strategy-seed!)))
+    (if (not (and (pair? seeded) (equal? (car seeded) #t)))
+        (display "EVOLVE_QD_M2_FAIL seed\n")
+        (begin
+          (set! *quiet* 1)
+          (set! *qd-run* (let ((r (getenv "AURA_EVO_RUN")))
+                            (if (and (string? r) (> (string-length r) 0)) r "m2-qd")))
+          (set! *qd-rng* (ev:env-int "EVOLVE_QD_SEED" 1))
+          (set! *qd-floor* (ev:env-int "EVOLVE_QD_FLOOR" -820))
+          (set! *horizon* (ev:env-int "EVOLVE_HORIZON" 60))
+          (let* ((seed *qd-rng*)
+                 (m (qd:map-elites
+                     (hash "descriptors" (list (list "throughput" 114 122 6)
+                                               (list "stops" 50 80 6))
+                           "quality" "score" "seed" seed)))
+                 (_ (set! *qd-map* m))
+                 (budget (ev:env-int "EVOLVE_QD_BUDGET" 240)))
+            (ql-record! "ev:choose" "SWAP" "qd-seed" "" 0 0 0 0 1 0 #f)
+            ;; The baseline body is a real KEEP and roots the lineage.
+            (let ((base (ev:run! ev:choose "seed" 0)))
+              (ql-record! "ev:choose" "KEEP" "seed-keep" *agg-body*
+                          base *throughput* *stops* 0 5 0 #f))
+            ;; Boundary probes: one forbidden body, one below the floor.
+            ;; Both must be ROLLBACK and must not reach the archive.
+            (let ((rej (ev:apply-body!
+                        "(lambda (age own other) (begin (set! *phase* 0) 0))"
+                        "qd-probe-bad")))
+              (ql-record! "ev:choose" "ROLLBACK"
+                          (string-append "gate:"
+                                         (if (and (pair? rej) (pair? (cdr rej)))
+                                             (car (cdr rej)) "?"))
+                          "(lambda (age own other) (begin (set! *phase* 0) 0))"
+                          0 0 0 0 2 1 #f))
+            (ql-record! "ev:choose" "HEAL" "probe" "" 0 0 0 0 3 0 #f)
+            (ql-record! "ev:choose" "MUTATE" "stop-w=3" "" 0 0 0 0 4 0 #f)
+            ;; g=999 is the "no age cap" end of the family: chase forever.
+            ;; The score floor itself is exercised by long-green mutations,
+            ;; which the tape records as constraint:score-floor.
+            (ql-m2-try! m 999 0 0 0)
+            (ql-init-sweep! m)
+            (ql-evolve! m (max 0 (- budget 128)))
+            (ql-report! m "QD_M2")
+            (let* ((best (qd:best m))
+                   (g (car (ql-entry-genes best)))
+                   (a (car (cdr (ql-entry-genes best))))
+                   (c (car (cdr (cdr (ql-entry-genes best)))))
+                   (body (ql-body g a c))
+                   (live (ev:apply-body! body "qd-keep")))
+              (if (and (pair? live) (equal? (car live) #t))
+                  (begin
+                    (set! *main-body* body)
+                    (set! *main-name* "qd-elite")
+                    (set! *main-score* (qd-opt best "quality" 0))
+                    (display "QD_KEEP g=") (display (number->string g))
+                    (display " a=") (display (number->string a))
+                    (display " c=") (display (number->string c))
+                    (display " score=") (display (nstr (inexact->exact (qd-opt best "quality" 0))))
+                    (newline)
+                    (ev:run! ev:choose "qd-keep" 1)
+                    (display "MAIN slot=qd-elite score=")
+                    (display (nstr (ev:score)))
+                    (newline))
+                  (begin
+                    (display "QD_KEEP_FAIL\n")))
+              (ev:stamp-world!)
+              (display "EVOLVE_QD_M2_OK\n")))))))
+(main)
+

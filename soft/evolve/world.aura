@@ -18,6 +18,7 @@
 (define *serve-cap* 2)
 (define *tape* 0)
 (define *slot-tag* "none")
+(define *quiet* 0)   ; 1 = a QD driver is evaluating; no per-tick chatter
 
 (define (ev:dialect)
   "city-light-factory-m0")
@@ -117,8 +118,10 @@
   (if (= *tick* 24)
       (begin
         (set! *stop-w* 3)
-        (display "MUTATE tick=24 stop-w=3 slot=")
-        (display tag)
-        (newline)))
+        (if (= *quiet* 0)
+            (begin
+              (display "MUTATE tick=24 stop-w=3 slot=")
+              (display tag)
+              (newline)))))
   (ev:tape!)
   *tick*)

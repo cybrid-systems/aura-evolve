@@ -19,6 +19,7 @@
 (define *g-qpen* 0)
 (define *g-tape* 0)
 (define *g-slot* "none")
+(define *g-quiet* 0)   ; 1 = a QD driver is evaluating; no per-tick chatter
 
 (define *n0-phase* 0)
 (define *n0-age* 0)
@@ -193,10 +194,12 @@
   (if (= *g-tick* 24)
       (begin
         (set! *g-stop-w* 3)
-        (display "MUTATE tick=24 stop-w=3 slot=")
-        (display *g-slot*)
-        (newline)
-        (etape! "MUTATE" 24 0 (g:score) "stop-w=3")))
+        (if (= *g-quiet* 0)
+            (begin
+              (display "MUTATE tick=24 stop-w=3 slot=")
+              (display *g-slot*)
+              (newline)
+              (etape! "MUTATE" 24 0 (g:score) "stop-w=3")))))
   (g:tape-line!)
   *g-tick*)
 

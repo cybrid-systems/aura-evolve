@@ -7,6 +7,7 @@ no C binary in this tree yet.
 
 Design: [`docs/DESIGN.md`](docs/DESIGN.md).
 Milestones: [`docs/m0.md`](docs/m0.md), [`docs/m1.md`](docs/m1.md), [`docs/m2.md`](docs/m2.md), [`docs/m3.md`](docs/m3.md).
+#4946 verification (Chinese): [`docs/VERIFY_4946.md`](docs/VERIFY_4946.md).
 Repo: https://github.com/cybrid-systems/aura-evolve
 
 This is not a traffic dashboard and not an Elo project. The product is the
@@ -17,13 +18,19 @@ Aura loop: hot-strategy, worldline search, MutationBoundary, relower.
 - **M1** swaps and heals the `ev:choose` slot mid-run, then races the same
   two bodies. `fiber_live` only when both fiber joins return scores.
   Otherwise `host-sequential`. See `docs/m1.md`.
-- **M2** gates a proposed `(lambda (age own other) ...)` and KEEPs it only
-  when its score is strictly greater than the current main. A tie or a loss
-  is DROP plus `hot-strategy:heal!`. HTTP is host-side only.
+- **M2** gates a proposed `(lambda (age own other) ...)`, then decides with
+  `std/qd`: a MAP-Elites archive whose descriptors are (throughput, stops)
+  and whose quality is the integer score. A candidate is KEEP when it fills
+  or improves a cell; a dominated cell and a gate/constraint rejection are
+  DROP. The champion is the best elite, stamped into `ev:choose`. The old
+  "strictly greater than the main" loop is kept as the A/B baseline
+  (`scripts/smoke_m2.sh`, `burn.sh`, `burn_pk.sh`). HTTP is host-side only.
 - **M3** is a two-intersection corridor. Each node has its own NS/EW queues.
   A policy is shared (same body on both nodes) or per-node. The score is the
-  sum: throughput − queue − stop. `ETAPE` lines are the append-only evolution
-  tape (`out/tape_*.md`). PK burn races proposed bodies on that grid.
+  sum: throughput − queue − stop. The corridor runs the same MAP-Elites
+  archive over policy pairs and must cover ≥ 60% of its declared 6×5
+  descriptor grid. `ETAPE` lines are generated from the evo log, not from a
+  second print path. PK burn races proposed bodies on that grid.
 
 ## Soft smoke
 
@@ -39,6 +46,7 @@ bash scripts/smoke_soft.sh    # M0 → EVOLVE_M0_OK
 bash scripts/smoke_m1.sh      # SWAP / HEAL / KEEP / DROP → EVOLVE_M1_OK
 bash scripts/smoke_m2.sh      # fixture propose → EVOLVE_M2_PROPOSE_OK
 bash scripts/smoke_m3.sh      # 2-node grid → EVOLVE_M3_OK
+bash scripts/smoke_qd.sh      # M2/M3 MAP-Elites acceptance → EVOLVE_QD_OK
 bash scripts/smoke.sh         # the stack, plus live MiniMax or LIVE_SKIP
 bash scripts/burn.sh          # 3 rounds, horizon 24; fixtures if EVOLVE_PROPOSE=0
 EVOLVE_PROPOSE=0 bash scripts/burn_pk.sh   # 4-round grid PK → EVOLVE_PK_OK
@@ -64,13 +72,18 @@ sudo docker run --rm --entrypoint /usr/local/bin/gosu \
 
 `scripts/run_soft.sh` is the same invocation. The source path is `$1`.
 It forwards `EVOLVE_HORIZON`, `EVOLVE_BURN_ROUNDS`, `EVOLVE_ROUND_DIR`,
-and `EVOLVE_PROPOSE_FILE` into the container.
+`EVOLVE_PROPOSE_FILE`, `EVOLVE_QD_*`, `AURA_EVO_LOG` and `AURA_EVO_RUN`
+into the container. Without docker (or with `EVOLVE_RUNNER=local`) it runs
+a native `AURA_BIN` with `AURA_PATH` instead, on the same sources; that is
+how the #4946 numbers were measured.
 
 On seed `20261005`, 60 ticks, M0 keeps `strat-agg` (mid 1, score `-764`)
 and drops `strat-calm` (mid 2, score `-1086`). M1's race prints the same
-scores. On the tip binary that race is
-`WORLD line=fiber_live backend=2 joins=2/2` (`backend=2` is CLI thread
-fallback, not serve-async). M0's own stamp stays `host-sequential`.
+scores. That race is `WORLD line=host-sequential backend=0 joins=0/0`: the
+one world is one mutable Soft workspace, so two live worldlines alias, and
+the CLI thread backend cannot give each one its own copy. Racing them is a
+corruption, not a speedup (#4946). Only a cooperative scheduler backend with
+no yield inside the thunks may stamp `fiber_live`.
 
 M2's chase fixture (`other > own`) scores `-650` and is KEEP. The hold
 fixture scores `-2289` and is DROP. Fixture burn (horizon 24) KEEPs round 1
@@ -80,11 +93,13 @@ fixture scores `-2289` and is DROP. Fixture burn (horizon 24) KEEPs round 1
 M3 seed `20261005`, 60 ticks, two nodes. Shared agg `-1167` KEEP, shared
 calm `-1837` DROP. Per-node (node 0 agg, node 1 chase) `-1165` KEEP
 (`per-node-higher`). World line on this tip:
-`WORLD line=fiber_live backend=2 joins=2/2`. Fixture PK (horizon 24, 4
+`WORLD line=host-sequential backend=0 joins=0/0`. Fixture PK (horizon 24, 4
 rounds) baselines agg at `-276`, KEEPs chase `-237`, DROPs flip `-291`,
-hold `-731`, and a tie at `-237`. `WORLD line=fiber_live backend=2 joins=8/8`.
+hold `-731`, and a tie at `-237`.
 Tape: `out/tape_m3.md`, `out/tape_pk.md`. Scoreboard: `out/pk_scoreboard.md`.
-Detail in `docs/m3.md`.
+The QD corridor (`scripts/smoke_qd.sh`) reaches 80–83% coverage of its 6×5
+grid with a best elite of `-1093`, better than the `-1165` champion. Detail
+in `docs/m3.md` and `docs/VERIFY_4946.md`.
 
 ## Engine
 
@@ -97,6 +112,9 @@ Detail in `docs/m3.md`.
 | `soft/evolve/burn.aura` | multi-round propose → gate → play |
 | `soft/evolve/grid.aura` | two-node corridor, aggregate score, `ETAPE` |
 | `soft/evolve/pk.aura` | sustained PK on the grid |
+| `soft/evolve/qd_lab.aura` | MAP-Elites archive, policy family, gate + floor + log |
+| `soft/evolve/qd_m2.aura` | M2 under `std/qd` (`EVOLVE_QD_M2_OK`) |
+| `soft/evolve/qd_m3.aura` | corridor under `std/qd` (`EVOLVE_QD_M3_OK`) |
 | `soft/evolve/m0_smoke.aura` | `EVOLVE_M0_OK` |
 | `soft/evolve/m1_smoke.aura` | `EVOLVE_M1_OK` |
 | `soft/evolve/m2_propose_smoke.aura` | fixture `EVOLVE_M2_PROPOSE_OK` |
@@ -107,6 +125,10 @@ Detail in `docs/m3.md`.
 | `scripts/burn.sh` | single-intersection host rounds, then Soft |
 | `scripts/burn_pk.sh` | grid PK, `out/pk_scoreboard.md` |
 | `scripts/replay_tape.sh` | pretty-print the newest tape |
+| `scripts/tape_from_evo_log.py` | evo log → ETAPE lines (one source) |
+| `scripts/verify_evo_tape.py` | tape vs `aura evo log/report` |
+| `scripts/qd_summary.py` | 5-seed table + acceptance checks |
+| `scripts/smoke_qd.sh` | M2/M3 QD acceptance (`EVOLVE_QD_OK`) |
 | `scripts/run_soft.sh` | docker tip binary |
 
 Rules, short form (detail in the milestone docs):
@@ -116,7 +138,9 @@ Rules, short form (detail in the milestone docs):
 - A red arrival adds to the queue and to the stop penalty. Green serves up to 2 cars.
 - Score is `throughput - queue_pen - stop_pen` (integers).
 - At tick 24 every worldline does `(set! *stop-w* 3)` and prints `MUTATE`.
-- KEEP requires a strictly higher score (M0's tie still keeps agg; M2's tie DROPs).
+- M0's tie still keeps agg. The live M2/M3 rule is a MAP-Elites insert
+  (`qd:insert!`): better-in-cell is KEEP, dominated is DROP. The legacy
+  single-champion scripts keep the strictly-higher rule for comparison.
 
 ## Propose
 
@@ -145,11 +169,13 @@ License: Apache-2.0
 
 活世界在 Soft：一个路口（城市灯控，或两条产线共用一盏绿灯）。M0 在同一条
 种子上赛两条策略，更好的留下（KEEP），更差的丢掉（DROP）。M0 没有 fiber，
-印 `host-sequential`。M1 中途 `swap!` / `heal!`，并且只有两条 fiber 都
-join 到分数时才印 `fiber_live`（这次是 `backend=2 joins=2/2`，线程回退，
-不是假装的调度器）。M2 由宿主脚本向 MiniMax 要一条
-`(lambda (age own other) ...)`，Soft 做门禁，分数不比当前主策略高就
-DROP 并 heal。密钥不进仓库，也不调用 `api.minimaxi.com`。
+印 `host-sequential`。M1 中途 `swap!` / `heal!`；CLI 只有线程后端（2），
+两条 worldline 共享同一份 Soft 全局状态，真并发会互相污染（#4946），所以
+顺序执行并印 `host-sequential`，只有协作调度后端且两个 join 都落数才印
+`fiber_live`。M2 由宿主脚本向 MiniMax 要一条
+`(lambda (age own other) ...)`，Soft 做门禁；实况判决改成 `std/qd` 的
+`qd:map-elites`（描述子吞吐/停车，质量 score），纪律仍是“安全边界不过就
+DROP”。密钥不进仓库，也不调用 `api.minimaxi.com`。
 
 ```bash
 bash scripts/smoke.sh          # M0 + M1 + M2 + M3 + 实况或 SKIP + burn + PK
@@ -161,8 +187,9 @@ bash scripts/replay_tape.sh    # 打印最新的 out/tape_*.md
 种子 `20261005`、60 拍：M0 `strat-agg` 分数 -764 KEEP，`strat-calm`
 -1086 DROP。M2 追逐体 -650 KEEP，一直不切换 -2289 DROP。
 M3 是两条路口的走廊，分数相加。共享 agg -1167 KEEP，calm -1837 DROP；
-节点 0 用 agg、节点 1 用 chase 得到 -1165，再 KEEP。这次二进制上
-`fiber_live backend=2 joins=2/2`。PK 四轮（地平线 24）主策略停在 -237，
-`joins=8/8`。没有 join 就不印 `fiber_live`。
+节点 0 用 agg、节点 1 用 chase 得到 -1165，再 KEEP。这次二进制上是
+`host-sequential backend=0 joins=0/0`（线程后端不真并发）。PK 四轮
+（地平线 24）主策略停在 -237。QD 走廊五种子覆盖率 80–83%，最好 elite
+-1093，好于 -1165；详见 `docs/VERIFY_4946.md`。
 镜像 `ghcr.io/cybrid-systems/dev:v1.0.9`，Soft 二进制
 `/workspace/aura-grok/build/aura`。仓库里没有密钥。
